@@ -99,7 +99,7 @@ endef
 	@echo "Pulling docker image: $(IMAGE_WITH_TAG)"
 	docker pull $(IMAGE_WITH_TAG)
 
-DOCKER_RUN_OPTS   ?= --rm -it --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+DOCKER_RUN_OPTS   ?= -it --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
 DOCKER_RUN_ARGS   ?=
 GPU_OPTS          ?= --gpus=all
 SOURCE_DIR        ?= $(shell readlink -f ..)

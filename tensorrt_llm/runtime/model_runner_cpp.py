@@ -383,6 +383,7 @@ class ModelRunnerCpp(ModelRunnerMixin):
                 self.gather_generation_logits=True, respectively).
         """
         # TODO: Check if these can be supported now and support them
+        print("Using C++ runtime")
         if lora_uids is not None:
             raise RuntimeError("LoRA is not supported in C++ session.")
         if stopping_criteria is not None:

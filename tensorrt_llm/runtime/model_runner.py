@@ -757,6 +757,7 @@ class ModelRunner(ModelRunnerMixin):
                 and self.gather_generation_logits=True, respectively).
         """
         # Use sampling_config like HF's generation_config
+        print("Using Python Runtime")
         if sampling_config is None:
             sampling_config = SamplingConfig(end_id=None, pad_id=None)
         else:

@@ -19,6 +19,7 @@ import platform
 from dataclasses import dataclass, field
 from functools import reduce, wraps
 from pathlib import Path
+import time
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Union
 
 import numpy as np
@@ -1639,7 +1640,10 @@ class GenerationSession(object):
                 self.tokens_per_block,
                 self.head_size,
             )
-            self.kv_cache_pool = torch.empty(cache_shape,
+            self.prefill_kv_cache_pool = torch.empty(cache_shape,
+                                             dtype=kv_cache_type,
+                                             device=self.device)
+            self.decode_kv_cache_pool = torch.empty(cache_shape,
                                              dtype=kv_cache_type,
                                              device=self.device)
             if self.cross_attention:  # As for now we enable cross paged kv and self paged kv to share the same tokens_per_block
@@ -2386,6 +2390,7 @@ class GenerationSession(object):
             last_token_ids = last_token_ids.reshape([batch_size, -1])
         if (use_gpt_attention_plugin
                 or self.has_rnn_layers) and remove_input_padding:
+            #prefix sum
             last_token_ids = torch.cumsum(last_token_ids, dim=0).int()
         ret = {'last_token_ids': last_token_ids}
 
@@ -2917,6 +2922,11 @@ class GenerationSession(object):
             print(
                 f"=================================== STEP {step} =================================="
             )
+        print(
+                f"=================================== STEP {step} =================================="
+        )
+        start_time = time.time()
+        before_start_time = time.time()
         if step % 2:
             context = self.runtime.context_0
             this_src_cache_indirection = cache_indirections[1]
@@ -2993,6 +3003,13 @@ class GenerationSession(object):
         # dynamic_decoder currently use torch's current stream, so must let TRT enqueue use same stream here
         stream = torch.cuda.current_stream().cuda_stream
         instance_idx = step % 2
+
+        before_end_time = time.time()
+        before_time = before_end_time - before_start_time
+        print(f"Before time: {before_time:.6f} seconds")
+
+        run_start_time = time.time()
+
         if self.cuda_graph_mode and self.runtime.cuda_graph_instances[
                 instance_idx] is not None:
             # launch cuda graph
@@ -3003,6 +3020,20 @@ class GenerationSession(object):
         else:
             ok = self.runtime._run(context, stream)
 
+        run_end_time = time.time()
+        run_time = run_end_time - run_start_time
+        print(f"Run time: {run_time:.6f} seconds")
+
+        if(step == 0):
+            copy_start_time = time.time()
+            self.decode_kv_cache_pool.copy_(self.prefill_kv_cache_pool)
+            self.buffer[f'host_kv_cache_pool_pointers'] = torch.tensor(
+                [self.decode_kv_cache_pool.data_ptr(), 0], dtype=torch.int64)
+            copy_end_time = time.time()
+            copy_time = copy_end_time - copy_start_time
+            print(f"Copy time: {copy_time:.6f} seconds")
+
+        after_start_time = time.time()
         if not ok:
             raise RuntimeError(f"Executing TRT engine failed step={step}!")
 
@@ -3281,6 +3312,14 @@ class GenerationSession(object):
                     for name, tensor in next_step_tensors.items()
                 }
 
+        after_end_time = time.time()
+        after_time = after_end_time - after_start_time
+        print(f"After time: {after_time:.6f} seconds")
+        
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"handle_per_step Elapsed time: {elapsed_time:.6f} seconds")
+
         return should_stop, next_step_tensors, tasks, context_lengths, host_context_lengths, attention_mask, context_logits, generation_logits, encoder_input_lengths
 
     def dump_debug_buffers(self, step: int) -> None:
@@ -3334,6 +3373,8 @@ class GenerationSession(object):
                        logits_processor: LogitsProcessor = None,
                        cross_attention_mask: torch.Tensor = None,
                        **kwargs):
+        breakpoint()
+        start_time = time.time()  # 记录开始时间
         kv_cache_block_offsets = None
         host_kv_cache_block_offsets = None
         cross_kv_cache_block_offsets = None
@@ -3440,6 +3481,11 @@ class GenerationSession(object):
 
         final_output_ids = self.finalize_decoder(context_lengths, batch_size,
                                                  beam_width, scfg)
+        end_time = time.time()  # 记录结束时间
+
+        elapsed_time = end_time - start_time  # 计算经过的时间
+        print(f"Total time: {elapsed_time:.6f} seconds")
+
         if self.mapping.is_first_pp_rank():
             if return_dict:
                 return get_outputs_dict(final_output_ids)
@@ -3577,6 +3623,7 @@ class GenerationSession(object):
                logits_processor: LogitsProcessor = None,
                cross_attention_mask: torch.Tensor = None,
                **kwargs):
+        print("Start Decoding")
         scfg = sampling_config
         batch_size = context_lengths.size(0)
         beam_width = scfg.num_beams
@@ -3648,7 +3695,7 @@ class GenerationSession(object):
                 self.max_attention_window_size, self.sink_token_length,
                 self.use_one_more_block)
             self.buffer[f'host_kv_cache_pool_pointers'] = torch.tensor(
-                [self.kv_cache_pool.data_ptr(), 0], dtype=torch.int64)
+                [self.prefill_kv_cache_pool.data_ptr(), 0], dtype=torch.int64)
 
             block_size = self.num_heads_kv * self.tokens_per_block * self.head_size
             self.kv_cache_manager = KVCacheManager(
@@ -3765,6 +3812,7 @@ class GenerationSession(object):
 
         # start context phase
         if streaming:
+            print("Using Decode Stream")
             return self.decode_stream(
                 batch_size, scfg, sequence_lengths, context_lengths,
                 host_context_lengths, max_context_length, beam_width,
@@ -3775,6 +3823,7 @@ class GenerationSession(object):
                 encoder_input_lengths, stopping_criteria, logits_processor,
                 cross_attention_mask, **kwargs)
         else:
+            print("Using Decode Regular")
             return self.decode_regular(
                 batch_size, scfg, sequence_lengths, context_lengths,
                 host_context_lengths, max_context_length, beam_width,

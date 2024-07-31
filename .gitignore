@@ -48,6 +48,6 @@ results_trt/
 
 # Generated files
 cpp/include/tensorrt_llm/executor/version.h
-
+Llama-2-7b-chat-hf/
 # User config files
 CMakeUserPresets.json
