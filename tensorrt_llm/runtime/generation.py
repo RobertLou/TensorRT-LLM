@@ -3020,6 +3020,7 @@ class GenerationSession(object):
         else:
             ok = self.runtime._run(context, stream)
 
+        torch.cuda.synchronize()
         run_end_time = time.time()
         run_time = run_end_time - run_start_time
         print(f"Run time: {run_time:.6f} seconds")
@@ -3029,6 +3030,7 @@ class GenerationSession(object):
             self.decode_kv_cache_pool.copy_(self.prefill_kv_cache_pool)
             self.buffer[f'host_kv_cache_pool_pointers'] = torch.tensor(
                 [self.decode_kv_cache_pool.data_ptr(), 0], dtype=torch.int64)
+            torch.cuda.synchronize()
             copy_end_time = time.time()
             copy_time = copy_end_time - copy_start_time
             print(f"Copy time: {copy_time:.6f} seconds")
@@ -3373,7 +3375,6 @@ class GenerationSession(object):
                        logits_processor: LogitsProcessor = None,
                        cross_attention_mask: torch.Tensor = None,
                        **kwargs):
-        breakpoint()
         start_time = time.time()  # 记录开始时间
         kv_cache_block_offsets = None
         host_kv_cache_block_offsets = None
