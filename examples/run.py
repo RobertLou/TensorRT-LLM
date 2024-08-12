@@ -78,6 +78,11 @@ def parse_arguments(args=None):
         default=False,
         action='store_true',
         help="Run several 10 iterations to profile the inference latencies.")
+    parser.add_argument(
+        '--pd_mode',
+        type=int,
+        default=2,
+        help="0 means to run prefill mode,1 means to run decode mode.2 means to run this the process in single machine.")
     parser = add_common_args(parser)
 
     return parser.parse_args(args=args)
@@ -249,6 +254,14 @@ def main(args):
 
     model_name, model_version = read_model_name(
         args.engine_dir) if not is_enc_dec else ("", "")
+
+    if args.pd_mode == 0:
+        print("mode 0")
+    elif args.pd_mode == 1:
+        print("mode 1")
+    elif args.pd_mode == 2:
+        print("mode 2")
+
     if args.tokenizer_dir is None and model_name in DEFAULT_HF_MODEL_DIRS:
         logger.warning(
             "tokenizer_dir is not specified. Try to infer from model_name, but this may be incorrect."
@@ -399,6 +412,7 @@ def main(args):
             no_repeat_ngram_size=args.no_repeat_ngram_size,
             return_dict=True,
             medusa_choices=args.medusa_choices,
+            pd_mode = args.pd_mode,
             return_all_generated_tokens=args.return_all_generated_tokens)
         torch.cuda.synchronize()
 

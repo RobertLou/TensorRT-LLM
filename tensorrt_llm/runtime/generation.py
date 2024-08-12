@@ -16,6 +16,7 @@
 import copy
 import math
 import platform
+import socket
 from dataclasses import dataclass, field
 from functools import reduce, wraps
 from pathlib import Path
@@ -1646,6 +1647,9 @@ class GenerationSession(object):
             self.decode_kv_cache_pool = torch.empty(cache_shape,
                                              dtype=kv_cache_type,
                                              device=self.device)
+            self.copy_kv_cache_pool = torch.empty(cache_shape,
+                                             dtype=kv_cache_type,
+                                             device=torch.device('cpu'))
             if self.cross_attention:  # As for now we enable cross paged kv and self paged kv to share the same tokens_per_block
                 cross_num_blocks, _ = self._get_num_paged_blocks(
                     self.encoder_max_input_length,
@@ -2917,7 +2921,8 @@ class GenerationSession(object):
             bad_words_data, encoder_output: torch.Tensor,
             encoder_input_lengths: torch.Tensor,
             stopping_criteria: StoppingCriteria,
-            logits_processor: LogitsProcessor, **kwargs):
+            logits_processor: LogitsProcessor, 
+            pd_mode: int, **kwargs):
         if self.debug_mode:
             print(
                 f"=================================== STEP {step} =================================="
@@ -3010,20 +3015,97 @@ class GenerationSession(object):
 
         run_start_time = time.time()
 
-        if self.cuda_graph_mode and self.runtime.cuda_graph_instances[
-                instance_idx] is not None:
-            # launch cuda graph
-            CUASSERT(
-                cudart.cudaGraphLaunch(
-                    self.runtime.cuda_graph_instances[instance_idx], stream))
-            ok = True
-        else:
-            ok = self.runtime._run(context, stream)
+        ok = False
+        if(step != 0 or pd_mode == 0):
+            if self.cuda_graph_mode and self.runtime.cuda_graph_instances[
+                    instance_idx] is not None:
+                # launch cuda graph
+                CUASSERT(
+                    cudart.cudaGraphLaunch(
+                        self.runtime.cuda_graph_instances[instance_idx], stream))
+                ok = True
+            else:
+                ok = self.runtime._run(context, stream)
 
         torch.cuda.synchronize()
         run_end_time = time.time()
         run_time = run_end_time - run_start_time
         print(f"Run time: {run_time:.6f} seconds")
+        
+
+        num_elements = self.copy_kv_cache_pool.numel()
+        itemsize = self.copy_kv_cache_pool.itemsize
+        total_bytes = num_elements * itemsize
+
+        #发送方
+        if(step == 0 and pd_mode == 0):
+            HOST = '127.0.0.1'  
+            PORT = 65432  
+
+            self.copy_kv_cache_pool = self.prefill_kv_cache_pool.cpu()
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((HOST, PORT))
+
+                # 序列化张量
+                tensor_bytes = self.copy_kv_cache_pool.numpy().tobytes()
+                
+                # 发送张量数据
+                total_sent = 0
+                while total_sent < total_bytes:
+                    s.sendall(tensor_bytes[total_sent : total_sent + 1024])
+                    total_sent += 1024
+
+                self.cpu_buffer_logits = self.buffer['logits'].cpu()
+                logits_bytes = self.cpu_buffer_logits.numpy().tobytes()
+                logits_size = self.cpu_buffer_logits.numel() * self.cpu_buffer_logits.itemsize
+                total_sent = 0
+                while total_sent < logits_size:
+                    s.sendall(logits_bytes[total_sent : total_sent + 1024])
+                    total_sent += 1024
+            
+
+        #接收方
+        if(step == 0 and pd_mode == 1):
+            ok = True
+            HOST = '127.0.0.1'
+            PORT = 65432 
+            
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((HOST, PORT))
+                s.listen()
+                conn, addr = s.accept()
+                with conn:
+                    print('Connected by', addr)
+                    shape = self.copy_kv_cache_pool.shape
+                    dtype = np.float16
+
+                    bytes_received = 0
+                    received_data = bytearray(total_bytes)
+                    while bytes_received < total_bytes:
+                        chunk = conn.recv(min(total_bytes - bytes_received, 1024))
+                        received_data[bytes_received:bytes_received + len(chunk)] = chunk
+                        bytes_received += len(chunk)
+
+                    numpy_array = np.frombuffer(received_data, dtype=dtype).reshape(shape)
+
+                    tensor = torch.from_numpy(numpy_array)
+
+                    logits_shape = self.buffer['logits'].shape
+                    logits_dtype = np.float32
+
+                    bytes_received = 0
+                    logits_size = self.buffer['logits'].numel() * self.buffer['logits'].itemsize
+                    received_logits = bytearray(logits_size)
+                    while bytes_received < logits_size:
+                        chunk = conn.recv(1024)
+                        received_logits[bytes_received:bytes_received + len(chunk)] = chunk
+                        bytes_received += len(chunk)  
+                    
+                    logits_tensor = torch.from_numpy(np.frombuffer(received_logits, dtype=logits_dtype).reshape(logits_shape))
+                             
+            self.prefill_kv_cache_pool = tensor.cuda()
+            self.buffer['logits'] = logits_tensor.cuda()
 
         if(step == 0):
             copy_start_time = time.time()
@@ -3374,7 +3456,9 @@ class GenerationSession(object):
                        stopping_criteria: StoppingCriteria = None,
                        logits_processor: LogitsProcessor = None,
                        cross_attention_mask: torch.Tensor = None,
+                       pd_mode: int = 2,
                        **kwargs):
+        breakpoint()
         start_time = time.time()  # 记录开始时间
         kv_cache_block_offsets = None
         host_kv_cache_block_offsets = None
@@ -3435,7 +3519,7 @@ class GenerationSession(object):
                 prompt_vocab_size, ite, sequence_limit_lengths,
                 sequence_lengths, next_step_tensors, stop_words_data,
                 bad_words_data, encoder_output, encoder_input_lengths,
-                stopping_criteria, logits_processor, **kwargs)
+                stopping_criteria, logits_processor, pd_mode, **kwargs)
             if step == 0:
                 if benchmark_profiler is not None:
                     benchmark_profiler.record_cuda_event('first_token')
@@ -3622,6 +3706,7 @@ class GenerationSession(object):
                encoder_input_lengths: torch.Tensor = None,
                stopping_criteria: StoppingCriteria = None,
                logits_processor: LogitsProcessor = None,
+               pd_mode : int = 2,
                cross_attention_mask: torch.Tensor = None,
                **kwargs):
         print("Start Decoding")
@@ -3833,7 +3918,7 @@ class GenerationSession(object):
                 sequence_limit_lengths, stop_words_data, bad_words_data,
                 output_sequence_lengths, return_dict, encoder_output,
                 encoder_input_lengths, stopping_criteria, logits_processor,
-                cross_attention_mask, **kwargs)
+                cross_attention_mask, pd_mode, **kwargs)
 
 
 class ChatGLMGenerationSession(GenerationSession):

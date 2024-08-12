@@ -718,6 +718,7 @@ class ModelRunner(ModelRunnerMixin):
                  stopping_criteria: Optional[StoppingCriteria] = None,
                  logits_processor: Optional[LogitsProcessor] = None,
                  medusa_choices: Optional[List[List[int]]] = None,
+                 pd_mode: int = 2,
                  **kwargs) -> Union[torch.Tensor, dict]:
         """
         Generates sequences of token ids.
@@ -813,6 +814,7 @@ class ModelRunner(ModelRunnerMixin):
             streaming=streaming,
             stopping_criteria=stopping_criteria,
             logits_processor=logits_processor,
+            pd_mode=pd_mode,
             **ptuning_kwargs)
         if sampling_config.return_dict:
             if streaming:
