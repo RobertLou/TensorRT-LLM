@@ -797,7 +797,8 @@ class ModelRunner(ModelRunnerMixin):
             sink_token_length=sampling_config.sink_token_length,
             lora_manager=self.lora_manager,
             lora_uids=lora_uids,
-            medusa_choices=medusa_choices)
+            medusa_choices=medusa_choices,
+            pd_mode=pd_mode)
 
         batch_input_ids = batch_input_ids.cuda()
         input_lengths = input_lengths.cuda()
@@ -814,7 +815,6 @@ class ModelRunner(ModelRunnerMixin):
             streaming=streaming,
             stopping_criteria=stopping_criteria,
             logits_processor=logits_processor,
-            pd_mode=pd_mode,
             **ptuning_kwargs)
         if sampling_config.return_dict:
             if streaming:

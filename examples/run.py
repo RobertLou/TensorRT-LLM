@@ -81,8 +81,8 @@ def parse_arguments(args=None):
     parser.add_argument(
         '--pd_mode',
         type=int,
-        default=2,
-        help="0 means to run prefill mode,1 means to run decode mode.2 means to run this the process in single machine.")
+        default=3,
+        help="0 means to run prefill,1 means to run decode,2 means to run data transfer in HBM,3 means the normal mode")
     parser = add_common_args(parser)
 
     return parser.parse_args(args=args)
@@ -255,12 +255,7 @@ def main(args):
     model_name, model_version = read_model_name(
         args.engine_dir) if not is_enc_dec else ("", "")
 
-    if args.pd_mode == 0:
-        print("mode 0")
-    elif args.pd_mode == 1:
-        print("mode 1")
-    elif args.pd_mode == 2:
-        print("mode 2")
+    print(f"mode {args.pd_mode}")
 
     if args.tokenizer_dir is None and model_name in DEFAULT_HF_MODEL_DIRS:
         logger.warning(
