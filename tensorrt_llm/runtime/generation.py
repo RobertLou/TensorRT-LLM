@@ -676,6 +676,7 @@ class GenerationSession(object):
     medusa_position_offsets: List[int] = None
     medusa_temperature: float = 0.0
     pd_mode: int = 3
+    batch_id: int = 0
 
     def __init__(self,
                  model_config: ModelConfig,
@@ -1499,7 +1500,8 @@ class GenerationSession(object):
               lora_uids: List[str] = None,
               medusa_choices: List[List[int]] = None,
               multi_block_mode: bool = None,
-              pd_mode: int = 3):
+              pd_mode: int = 3,
+              batch_id: int = 0):
         # Store these params related to buffer size to check against
         # the input shape with the params given in decode()
         self.batch_size = batch_size
@@ -1512,6 +1514,7 @@ class GenerationSession(object):
         self.encoder_max_input_length = encoder_max_input_length
         self.multi_block_mode = multi_block_mode
         self.pd_mode = pd_mode
+        self.batch_id = batch_id
         if max_attention_window_size is None:
             self.max_attention_window_size = self.max_seq_length
             logger.debug(
@@ -3045,12 +3048,12 @@ class GenerationSession(object):
             kv_dtype = self.prefill_kv_cache_pool.dtype
             logits_dtype = self.buffer[f'logits'].dtype
 
-            #发送方
+            #Prefill Engine
             if(self.pd_mode == 0):
                 transfer_start_time = time.time()
 
-                kv_shm = shared_memory.SharedMemory(create=True, name='shared_kv_cache', size=kv_size)
-                logits_shm = shared_memory.SharedMemory(create=True, name='shared_logits', size=logits_size)
+                kv_shm = shared_memory.SharedMemory(create=True, name='shared_kv_cache' + str(self.batch_id), size=kv_size)
+                logits_shm = shared_memory.SharedMemory(create=True, name='shared_logits' + str(self.batch_id), size=logits_size)
 
                 kv_tensor = torch.frombuffer(buffer=kv_shm.buf, dtype=kv_dtype, count=self.prefill_kv_cache_pool.numel()).reshape(kv_shape)
                 logits_tensor = torch.frombuffer(buffer=logits_shm.buf, dtype=logits_dtype, count=self.buffer['logits'].numel()).reshape(logits_shape)
@@ -3071,42 +3074,40 @@ class GenerationSession(object):
                 transfer_time = transfer_end_time - transfer_start_time
 
                 try:
-                    signal_shm = shared_memory.SharedMemory(name='shared_tensor_signal', size=1)
+                    signal_shm = shared_memory.SharedMemory(name='shared_tensor_signal' + str(self.batch_id), size=1)
                 except Exception:
-                    signal_shm = shared_memory.SharedMemory(create=True, name='shared_tensor_signal', size=1)
+                    signal_shm = shared_memory.SharedMemory(create=True, name='shared_tensor_signal' + str(self.batch_id), size=1)
 
                 signal_shm.buf[0] = 1
 
                 print(f"Transfer time: {transfer_time:.6f} seconds")
-                while signal_shm.buf[0] == 1:
-                    time.sleep(0.01)
+
+                # Wait until Decode Engine finished
+                """ while signal_shm.buf[0] == 1:
+                    time.sleep(0.01) """
                 
                 signal_shm.close()
                 kv_shm.close()
                 logits_shm.close()
 
-                signal_shm.unlink()
-                kv_shm.unlink()
-                logits_shm.unlink()
-
-            #接收方
+            #Decode Engine
             if(self.pd_mode == 1):
                 ok = True
                 
                 try:
-                    signal_shm = shared_memory.SharedMemory(create=True, name='shared_tensor_signal', size=1)
+                    signal_shm = shared_memory.SharedMemory(create=True, name='shared_tensor_signal' + str(self.batch_id), size=1)
                     signal_shm.buf[0] = 0
                 except Exception:
-                    signal_shm = shared_memory.SharedMemory(name='shared_tensor_signal', size=1)
+                    signal_shm = shared_memory.SharedMemory(name='shared_tensor_signal' + str(self.batch_id), size=1)
 
 
-                while signal_shm.buf[0] != 1:
+                while signal_shm.buf[0] == 0:
                     time.sleep(0.01)
 
                 transfer_start_time = time.time()
 
-                kv_shm = shared_memory.SharedMemory(name='shared_kv_cache')
-                logits_shm = shared_memory.SharedMemory(name='shared_logits', size=logits_size)
+                kv_shm = shared_memory.SharedMemory(name='shared_kv_cache' + str(self.batch_id))
+                logits_shm = shared_memory.SharedMemory(name='shared_logits' + str(self.batch_id), size=logits_size)
 
                 kv_tensor = torch.frombuffer(buffer=kv_shm.buf, dtype=self.prefill_kv_cache_pool.dtype, count=self.prefill_kv_cache_pool.numel()).reshape(self.prefill_kv_cache_pool.shape)
                 logits_tensor = torch.frombuffer(buffer=logits_shm.buf, dtype=self.buffer['logits'].dtype, count=self.buffer['logits'].numel()).reshape(self.buffer['logits'].shape)
@@ -3127,6 +3128,10 @@ class GenerationSession(object):
                 signal_shm.close()
                 kv_shm.close()
                 logits_shm.close()
+
+                signal_shm.unlink()
+                kv_shm.unlink()
+                logits_shm.unlink()
 
             if(self.pd_mode == 2):
                 copy_start_time = time.time()
@@ -3478,7 +3483,6 @@ class GenerationSession(object):
                        logits_processor: LogitsProcessor = None,
                        cross_attention_mask: torch.Tensor = None,
                        **kwargs):
-        breakpoint()
         start_time = time.time()  # 记录开始时间
         kv_cache_block_offsets = None
         host_kv_cache_block_offsets = None
@@ -3540,6 +3544,8 @@ class GenerationSession(object):
                 sequence_lengths, next_step_tensors, stop_words_data,
                 bad_words_data, encoder_output, encoder_input_lengths,
                 stopping_criteria, logits_processor, **kwargs)
+            if step > 0 and self.pd_mode == 0:
+                break
             if step == 0:
                 if benchmark_profiler is not None:
                     benchmark_profiler.record_cuda_event('first_token')

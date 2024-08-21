@@ -718,7 +718,8 @@ class ModelRunner(ModelRunnerMixin):
                  stopping_criteria: Optional[StoppingCriteria] = None,
                  logits_processor: Optional[LogitsProcessor] = None,
                  medusa_choices: Optional[List[List[int]]] = None,
-                 pd_mode: int = 2,
+                 batch_id: int = 0,
+                 pd_mode: int = 3,
                  **kwargs) -> Union[torch.Tensor, dict]:
         """
         Generates sequences of token ids.
@@ -798,7 +799,8 @@ class ModelRunner(ModelRunnerMixin):
             lora_manager=self.lora_manager,
             lora_uids=lora_uids,
             medusa_choices=medusa_choices,
-            pd_mode=pd_mode)
+            pd_mode=pd_mode,
+            batch_id=batch_id)
 
         batch_input_ids = batch_input_ids.cuda()
         input_lengths = input_lengths.cuda()

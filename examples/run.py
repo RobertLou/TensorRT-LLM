@@ -376,39 +376,44 @@ def main(args):
     runner = runner_cls.from_dir(**runner_kwargs)
 
     with torch.no_grad():
-        outputs = runner.generate(
-            batch_input_ids=decoder_input_ids
-            if is_enc_dec else batch_input_ids,
-            encoder_input_ids=encoder_input_ids if is_enc_dec else None,
-            max_new_tokens=args.max_output_len,
-            max_attention_window_size=args.max_attention_window_size,
-            sink_token_length=args.sink_token_length,
-            end_id=end_id,
-            pad_id=pad_id,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            num_beams=args.num_beams,
-            length_penalty=args.length_penalty,
-            early_stopping=args.early_stopping,
-            repetition_penalty=args.repetition_penalty,
-            presence_penalty=args.presence_penalty,
-            frequency_penalty=args.frequency_penalty,
-            stop_words_list=stop_words_list,
-            bad_words_list=bad_words_list,
-            output_cum_log_probs=(args.output_cum_log_probs_npy != None),
-            output_log_probs=(args.output_log_probs_npy != None),
-            random_seed=args.random_seed,
-            lora_uids=args.lora_task_uids,
-            prompt_table=args.prompt_table_path,
-            prompt_tasks=args.prompt_tasks,
-            streaming=args.streaming,
-            output_sequence_lengths=True,
-            no_repeat_ngram_size=args.no_repeat_ngram_size,
-            return_dict=True,
-            medusa_choices=args.medusa_choices,
-            pd_mode = args.pd_mode,
-            return_all_generated_tokens=args.return_all_generated_tokens)
+        sublist_length = 32
+        sublists = [batch_input_ids[i:i+sublist_length] for i in range(0, len(batch_input_ids), sublist_length)]
+        breakpoint()
+        for i,sublist in enumerate(sublists):
+            outputs = runner.generate(
+                batch_input_ids=decoder_input_ids
+                if is_enc_dec else sublist,
+                encoder_input_ids=encoder_input_ids if is_enc_dec else None,
+                max_new_tokens=args.max_output_len,
+                max_attention_window_size=args.max_attention_window_size,
+                sink_token_length=args.sink_token_length,
+                end_id=end_id,
+                pad_id=pad_id,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                top_p=args.top_p,
+                num_beams=args.num_beams,
+                length_penalty=args.length_penalty,
+                early_stopping=args.early_stopping,
+                repetition_penalty=args.repetition_penalty,
+                presence_penalty=args.presence_penalty,
+                frequency_penalty=args.frequency_penalty,
+                stop_words_list=stop_words_list,
+                bad_words_list=bad_words_list,
+                output_cum_log_probs=(args.output_cum_log_probs_npy != None),
+                output_log_probs=(args.output_log_probs_npy != None),
+                random_seed=args.random_seed,
+                lora_uids=args.lora_task_uids,
+                prompt_table=args.prompt_table_path,
+                prompt_tasks=args.prompt_tasks,
+                streaming=args.streaming,
+                output_sequence_lengths=True,
+                no_repeat_ngram_size=args.no_repeat_ngram_size,
+                return_dict=True,
+                medusa_choices=args.medusa_choices,
+                pd_mode = args.pd_mode,
+                batch_id = i,
+                return_all_generated_tokens=args.return_all_generated_tokens)
         torch.cuda.synchronize()
 
     if args.streaming:
@@ -496,6 +501,7 @@ def main(args):
                     streaming=args.streaming,
                     output_sequence_lengths=True,
                     return_dict=True,
+                    pd_mode = args.pd_mode,
                     return_all_generated_tokens=args.return_all_generated_tokens
                 )
                 torch.cuda.synchronize()
@@ -530,6 +536,7 @@ def main(args):
                     streaming=args.streaming,
                     output_sequence_lengths=True,
                     return_dict=True,
+                    pd_mode = args.pd_mode,
                     return_all_generated_tokens=args.return_all_generated_tokens
                 )
                 torch.cuda.synchronize()
