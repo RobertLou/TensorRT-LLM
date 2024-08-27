@@ -759,7 +759,6 @@ class ModelRunner(ModelRunnerMixin):
                 and self.gather_generation_logits=True, respectively).
         """
         # Use sampling_config like HF's generation_config
-        print("Using Python Runtime")
         if sampling_config is None:
             sampling_config = SamplingConfig(end_id=None, pad_id=None)
         else:
@@ -824,6 +823,104 @@ class ModelRunner(ModelRunnerMixin):
                            for curr_outputs in outputs)
             else:
                 outputs = self._prepare_outputs(outputs, input_lengths)
+        return outputs
+    
+    def generate_batch(self,
+                 batch_input_ids: List[torch.Tensor],
+                 sampling_config: Optional[SamplingConfig] = None,
+                 prompt_table: Optional[Union[str, torch.Tensor]] = None,
+                 prompt_tasks: Optional[str] = None,
+                 lora_uids: Optional[list] = None,
+                 streaming: bool = False,
+                 stopping_criteria: Optional[StoppingCriteria] = None,
+                 logits_processor: Optional[LogitsProcessor] = None,
+                 medusa_choices: Optional[List[List[int]]] = None,
+                 pd_mode: int = 3,
+                 **kwargs) -> Union[torch.Tensor, dict]:
+        # Use sampling_config like HF's generation_config
+        if sampling_config is None:
+            sampling_config = SamplingConfig(end_id=None, pad_id=None)
+        else:
+            sampling_config = copy.deepcopy(sampling_config)
+        sampling_config.update(**kwargs)
+
+        # To prevent numerical overflow when the temperature is set to 0.0
+        # Modify generation.SamplingConfig
+        if isinstance(sampling_config.temperature,
+                      float) and sampling_config.temperature == 0.0:
+            logger.warning(
+                "Convert `temperature=0.0` to `temperature=1.0` and `top_k=1` to prevent overflow."
+            )
+            sampling_config.temperature = 1.0
+            sampling_config.top_k = 1
+        
+        mini_batch_length = 32
+        mini_batchs = [batch_input_ids[i:i+mini_batch_length] for i in range(0, len(batch_input_ids), mini_batch_length)]
+        _, batch_input_lengths = self._prepare_inputs(
+                batch_input_ids, sampling_config.pad_id)
+        max_batch_length = batch_input_lengths.max().item()
+        outputs = []
+        
+        if(pd_mode == 1):
+            self.session.create_share_memory_buffer(
+                batch_size = mini_batch_length,
+                max_context_length = max_batch_length,
+                max_new_tokens=sampling_config.max_new_tokens, 
+                buffer_num = 4,
+            )
+        
+        for i, mini_batch in enumerate(mini_batchs):
+            self._check_inputs(mini_batch, sampling_config)
+
+            batch_size = len(mini_batch)
+            mini_batch, input_lengths = self._prepare_inputs(
+                mini_batch, sampling_config.pad_id)
+
+            if sampling_config.bad_words_list is not None:
+                sampling_config.bad_words_list = to_word_list_format(
+                    sampling_config.bad_words_list)
+            if sampling_config.stop_words_list is not None:
+                sampling_config.stop_words_list = to_word_list_format(
+                    sampling_config.stop_words_list)
+                
+            self.session.setup(
+                batch_size=batch_size,
+                max_context_length=input_lengths.max().item(),
+                max_new_tokens=sampling_config.max_new_tokens,
+                beam_width=sampling_config.num_beams,
+                max_attention_window_size=sampling_config.max_attention_window_size,
+                sink_token_length=sampling_config.sink_token_length,
+                lora_manager=self.lora_manager,
+                lora_uids=lora_uids,
+                medusa_choices=medusa_choices,
+                pd_mode=pd_mode,
+                batch_id=i)
+
+            mini_batch = mini_batch.cuda()
+            input_lengths = input_lengths.cuda()
+            ptuning_kwargs = self._prepare_ptuning(prompt_table, prompt_tasks,
+                                                batch_size)
+            outputs = self.session.decode(
+                mini_batch,
+                input_lengths,
+                sampling_config,
+                stop_words_list=sampling_config.stop_words_list,
+                bad_words_list=sampling_config.bad_words_list,
+                output_sequence_lengths=sampling_config.output_sequence_lengths,
+                return_dict=sampling_config.return_dict,
+                streaming=streaming,
+                stopping_criteria=stopping_criteria,
+                logits_processor=logits_processor,
+                **ptuning_kwargs)
+            if sampling_config.return_dict:
+                if streaming:
+                    outputs = (self._prepare_outputs(curr_outputs, input_lengths)
+                            for curr_outputs in outputs)
+                else:
+                    outputs = self._prepare_outputs(outputs, input_lengths)
+                    
+        if(pd_mode == 1):
+            self.session.free_share_memory_buffer()
         return outputs
 
     def serialize_engine(self) -> trt.IHostMemory:
